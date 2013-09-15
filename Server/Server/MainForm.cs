@@ -625,7 +625,7 @@ namespace Server
             switch (msg.Msg)
             {
                 case WM_DRAWCLIPBOARD:
-                    if (connected)
+                    if (connected && mainServer.N_ACK == 0)
                         buttonClipboard.Enabled = true;
 
                     SendMessage(nextClipboardViewer, msg.Msg, msg.WParam, msg.LParam);
@@ -646,7 +646,18 @@ namespace Server
         private void buttonClipboard_Click(object sender, EventArgs e)
         {
             string dataText;
-            IDataObject data = Clipboard.GetDataObject();
+            IDataObject data;
+            try
+            {
+                data = Clipboard.GetDataObject();
+            }
+            catch (ExternalException)
+            {
+                // da' questa eccezione in caso di concorrenza con altri programmi
+
+                buttonClipboard.Text = "Clipboard busy. Retry.";
+                return;
+            }
 
             // se devo inviare TESTO
             if (data.GetDataPresent(DataFormats.Text))

@@ -562,12 +562,6 @@ namespace Client
 
                     username = msgLine.Substring(4);
 
-                    //if (MessageBox.Show("Clipboard received overwrite the existing one?", "New clipboard shared",
-                    //    MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.No)
-                    //{
-                    //    continue;
-                    //}
-
                     string why = "Receiving...";
                     this.Invoke(new DisableClipboardCallback(this.disableClipboard), new object[] { why });
                     

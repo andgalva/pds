@@ -88,6 +88,8 @@ namespace Server
             public string getSharedFolderLocation() { return sharedFolderLocation; }
         private const string clientDisconnectMessage = "BYE";
 
+        public volatile int N_ACK = 0;
+
         #endregion
 
         public MainServer(MainForm mainForm)
@@ -124,18 +126,10 @@ namespace Server
         }
         public void removeUser(TcpClient tcpUser)
         {
-            if (tcpUser == null || tableConnections[tcpUser] == null)
+            if (tcpUser == null || !tableConnections.ContainsKey(tcpUser))
                 return;
 
-            //if (tcpUser.Connected)
-            try
-            {
-                tcpUser.GetStream().Close();
-            }
-            catch (InvalidOperationException)
-            {
-                // passo da qui quando lo user è crashato, durante Debug
-            }
+            string username = (String) tableConnections[tcpUser];
 
             lock (this)
             {
@@ -147,6 +141,16 @@ namespace Server
                 tableConnections.Remove(tcpUser);
             }
             num_clients--;
+
+            try
+            {
+                if (tcpUser.Connected)
+                    tcpUser.GetStream().Close();
+            }
+            catch (InvalidOperationException)
+            {
+                // passo da qui quando lo user è crashato, durante Debug
+            }
 
             // se e' in corso una cattura schermo...
             if (MainForm.isCapturing())
@@ -160,10 +164,10 @@ namespace Server
                 MainForm.workerThread = new Thread(MainForm.workerObject.DoWork);
                 MainForm.workerThread.Start();
             }
-            
+
             updateUsersListBox();
 
-            sendAdminMessage(tableConnections[tcpUser] + " left.");
+            sendAdminMessage(username + " left.");
         }
         public void removeAllUsers()
         {
@@ -552,14 +556,14 @@ namespace Server
                 }
             }
 
-
+            N_ACK = num_clients;
         }
         public void sendClipboardText(string text)
         {
             //TcpClient[] tcpClients = new TcpClient[MainServer.tableConnectionsClipboard.Count];
             //MainServer.tableConnectionsClipboard.Values.CopyTo(tcpClients, 0);
 
-            string why = "Sharing Clipboard";
+            string why = "Sharing...";
             mainForm.Invoke(new DisableClipboardCallback(mainForm.disableClipboard), new object[] { why });
 
             lock (this)
@@ -585,12 +589,14 @@ namespace Server
                     }
                     catch
                     {
-                        removeUser(tcpClient);
+                        //removeUser(tcpClient); <- non e' la tcpclient giusta
                         continue;
                     }
                 }
             }
             sendAdminMessage("Server shared clipboard (Text)");
+
+            N_ACK = num_clients;
 
         }
         public void sendClipboardImage(Bitmap bmp)
@@ -626,18 +632,19 @@ namespace Server
                     }
                     catch
                     {
-                        removeUser(tcpClient);
+                        //removeUser(tcpClient); <- non e' la tcpclient giusta
                         continue;
                     }
                 }
             }
             sendAdminMessage("Server shared his clipboard (Image)");
 
+            N_ACK = num_clients;
         }
         private void receiveClipboard(object tcpConnection)
         {
             byte[] buff = new byte[1024];
-            string text, username;
+            string text, username = "";
             // path dei file ricevuti
             System.Collections.Specialized.StringCollection paths = new System.Collections.Specialized.StringCollection();
 
@@ -653,29 +660,59 @@ namespace Server
                 try
                 {
                     string msgLine = streamReader.ReadLine();
-
-                    if (msgLine.Substring(0, 4).Equals("ACK."))
+                    sendAdminMessage("--- RICEVUTO <" + msgLine +"> ---");
+                    string msgType;
+                    try
                     {
-                        // il Server deve attendere l'ACK dal Client per riabilitare il tasto Clipboard
+                        msgType = msgLine.Substring(0, 4);
+                    }
+                    catch (ArgumentOutOfRangeException)
+                    {
+                        // puo' essere una stringa letta male (qualcosa rimasto sul buffer dopo che un client si e' disconnesso)
 
-                        string Reason = "Share Clipboard";
-                        mainForm.Invoke(new DisableClipboardCallback(mainForm.enableClipboard), new object[] { Reason });
-
+                        sendAdminMessage("errore leggendo la msgline: <" + msgLine + "> ."); 
                         continue;
                     }
 
-                    username = msgLine.Substring(4);
+
+                    if (msgType.Equals("ACK."))
+                    {
+                        // il Server deve attendere l'ACK dal Client per riabilitare il tasto Clipboard
+                        lock (this)
+                        {
+                            N_ACK--;
+                        }
+                        if (N_ACK == 0)
+                        {
+                            string Reason = "Share Clipboard";
+                            mainForm.Invoke(new DisableClipboardCallback(mainForm.enableClipboard), new object[] { Reason });
+                        }
+                        sendAdminMessage("N_ACK = " + N_ACK +"/"+ num_clients);
+                        continue;
+                    }
+
+
+                    try
+                    {
+                        username = msgLine.Substring(4);
+                    }
+                    catch (ArgumentOutOfRangeException)
+                    {
+                        // puo' essere una stringa letta male (qualcosa rimasto sul buffer dopo che un client si e' disconnesso)
+
+                        sendAdminMessage("errore leggendo la msgline: <" + msgLine + "> .");
+                        continue;
+                    }
+
+                    string disable = "Receiving";
+                    mainForm.Invoke(new DisableClipboardCallback(mainForm.disableClipboard), new object[] { disable });
 
                     #region FILE
 
                     string fileFullPath = "";
 
-                    if (msgLine.Substring(0, 4).Equals("File"))
+                    if (msgType.Equals("File"))
                     {
-
-                        string why = "Receiving";
-                        // per immettere dei dati nella clipboard devo disattivarla (?)
-                        mainForm.Invoke(new DisableClipboardCallback(mainForm.disableClipboard), new object[] { why });
                         paths.Clear();
 
                         /* MESSAGGI TRASMISSIONE FILE:
@@ -738,53 +775,64 @@ namespace Server
                             OnStatusChanged(new StatusChangedEventArgs("File saved in: '" + fileFullPath +
                                 "'\r\n(Use 'File -> Open folder' to see shared files)"));
 
-                            // rimbalzo il fle agli altri utenti
 
-                            lock (this)
+                            if (error)
+                                sendAdminMessage(username + " encountered an error while sharing clipboard.");
+                            if (abort)
+                                sendAdminMessage(username + " aborted clipboard sharing.");
+                            else
                             {
-                                TcpClient[] tcpClients = new TcpClient[tableConnectionsClipboard.Count];
-                                tableConnectionsClipboard.Values.CopyTo(tcpClients, 0);
-                                foreach (TcpClient tcpClient in tcpClients)
+                                sendAdminMessage(username + " shared clipboard " +
+                                                ((quant == 1) ? "(File)" : " (Multiple files)"));
+
+                                // aggiorno la clipboard con tutti i path dei file salvati in locale!
+                                mainForm.Invoke(new UpdateClipboardCallback(updateClipboardWithFilePaths), new object[] { paths });
+                            }
+
+
+                            if (num_clients > 1)
+                            {
+                                // rimbalzo il fle agli altri utenti
+                                lock (this)
                                 {
-                                    try
+                                    string why = "Broadcasting...";
+                                    mainForm.Invoke(new DisableClipboardCallback(mainForm.disableClipboard), new object[] { why });
+
+                                    TcpClient[] tcpClients = new TcpClient[tableConnectionsClipboard.Count];
+                                    tableConnectionsClipboard.Values.CopyTo(tcpClients, 0);
+                                    foreach (TcpClient tcpClient in tcpClients)
                                     {
-                                        if (tcpClient == null || tcpClient == tableConnectionsClipboard[username])
-                                            //username.Equals(tableConnections[tcpClient]))
+                                        try
+                                        {
+                                            if (tcpClient == null || tcpClient == tableConnectionsClipboard[username])
+                                                //username.Equals(tableConnections[tcpClient]))
+                                                continue;
+
+                                            StreamWriter sw = new StreamWriter(tcpClient.GetStream());
+                                            // stessa prassi:
+                                            // primo messaggio col tipo ("File1|U", 1 perche' mandiamo 1 file alla volta)
+                                            sw.WriteLine("File1|" + username);
+                                            sw.Flush();
+                                            // poi "File: fileName"
+                                            sw.WriteLine("File: " + Path.GetFileName(fileName));
+                                            sw.Flush();
+                                            // poi il file serializzato
+                                            sw.WriteLine(Convert.ToBase64String(clientData));
+                                            sw.Flush();
+                                            sw = null;
+
+                                            N_ACK++;
+                                        }
+                                        catch
+                                        {
+                                            sendAdminMessage("Error sending clipboard from user '" + username + "' to other users.");
+
+                                            //removeUser(tcpClient);
                                             continue;
-                                        
-                                        StreamWriter sw = new StreamWriter(tcpClient.GetStream());
-                                        // stessa prassi:
-                                        // primo messaggio col tipo ("File1|U", 1 perche' mandiamo 1 file alla volta)
-                                        sw.WriteLine("File1|" + username);
-                                        sw.Flush();
-                                        // poi "File: fileName"
-                                        sw.WriteLine("File: " + Path.GetFileName(fileName));
-                                        sw.Flush();
-                                        // poi il file serializzato
-                                        sw.WriteLine(Convert.ToBase64String(clientData));
-                                        sw.Flush();
-                                        sw = null;
-                                    }
-                                    catch
-                                    {
-                                        sendAdminMessage("Error receiving clipboard from user '" + username + "'. User will be removed");
-                                        removeUser(tcpClient);
-                                        continue;
+                                        }
                                     }
                                 }
                             }
-                        }
-                        if (error)
-                            sendAdminMessage(username + " encountered an error while sharing clipboard.");
-                        if (abort)
-                            sendAdminMessage(username + " aborted clipboard sharing.");
-                        else
-                        {
-                            sendAdminMessage(username + " shared clipboard " +
-                                            ((quant == 1) ? "(File)" : " (Multiple files)"));
-
-                            // aggiorno la clipboard con tutti i path dei file salvati in locale!
-                            mainForm.Invoke(new UpdateClipboardCallback(updateClipboardWithFilePaths), new object[] { paths });
                         }
 
                     }
@@ -792,11 +840,8 @@ namespace Server
                     #endregion
 
                     #region TEXT
-                    else if (msgLine.Substring(0, 4).Equals("Text"))
+                    else if (msgType.Equals("Text"))
                     {
-                        string Reason = "Receiving";
-                        mainForm.Invoke(new DisableClipboardCallback(mainForm.disableClipboard), new object[] { Reason });
-
                         byte[] bytes = new byte[tcpClibpoardClient.ReceiveBufferSize];
 
                         // bloccante finche' non viene letto un byte
@@ -804,90 +849,113 @@ namespace Server
                         string text_bytes = Encoding.ASCII.GetString(bytes);
                         text = trimToEnd(text_bytes);
 
-                        lock (this)
-                        {
-                            TcpClient[] tcpClients = new TcpClient[tableConnectionsClipboard.Count];
-                            tableConnectionsClipboard.Values.CopyTo(tcpClients, 0);
-                            foreach (TcpClient tcpClient in tcpClients)
-                            {
-                                try
-                                {
-                                    if (tcpClient == null || tcpClient == tableConnectionsClipboard[username])
-                                        continue;
-
-                                    StreamWriter sw = new StreamWriter(tcpClient.GetStream());
-                                    sw.WriteLine("Text" + username);
-                                    sw.Flush();
-                                    sw = null;
-
-                                    NetworkStream sendstr = tcpClient.GetStream();
-                                    Byte[] sendBytes = Encoding.ASCII.GetBytes(text);
-                                    sendstr.Write(sendBytes, 0, sendBytes.Length);
-                                }
-                                catch
-                                {
-                                    sendAdminMessage("Error receiving clipboard from user '" + username + "'. User will be removed");
-                                    removeUser(tcpClient);
-                                    continue;
-                                }
-                            }
-                        }
 
                         // devo incapsularlo in un oggetto IDataObject per memorizzarlo nella clipboard!
                         IDataObject dataClipboard = new DataObject();
                         dataClipboard.SetData(text);
                         Clipboard.SetDataObject(dataClipboard, true);
 
+                        if (num_clients > 1)
+                        {
+                            lock (this)
+                            {
+                                string why = "Broadcasting...";
+                                mainForm.Invoke(new DisableClipboardCallback(mainForm.disableClipboard), new object[] { why });
+
+                                TcpClient[] tcpClients = new TcpClient[tableConnectionsClipboard.Count];
+                                tableConnectionsClipboard.Values.CopyTo(tcpClients, 0);
+                                foreach (TcpClient tcpClient in tcpClients)
+                                {
+                                    try
+                                    {
+                                        if (tcpClient == null || tcpClient == tableConnectionsClipboard[username])
+                                            continue;
+
+                                        StreamWriter sw = new StreamWriter(tcpClient.GetStream());
+                                        sw.WriteLine("Text" + username);
+                                        sw.Flush();
+                                        sw = null;
+
+                                        NetworkStream sendstr = tcpClient.GetStream();
+                                        Byte[] sendBytes = Encoding.ASCII.GetBytes(text);
+                                        sendstr.Write(sendBytes, 0, sendBytes.Length);
+
+                                        N_ACK++;
+                                    }
+                                    catch
+                                    {
+                                        sendAdminMessage("Error sending clipboard from user '" + username + "' to other users.");
+
+                                        //removeUser(tcpClient); <- magari non e' colpa sua
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+
+
                         sendAdminMessage(username + " shared his clipboard (Text): '"+ text +"'");
                     }
                     #endregion
 
                     #region IMAGE
-                    else if (msgLine.Substring(0, 4).Equals("Imag"))
+                    else if (msgType.Equals("Imag"))
                     {
-                        string why = "Receiving";
-                        mainForm.Invoke(new DisableClipboardCallback(mainForm.disableClipboard), new object[] { why });
-
                         Stream imageStream = tcpClibpoardClient.GetStream();
                         IFormatter formatter = new BinaryFormatter();
                         Bitmap bmp = (Bitmap)formatter.Deserialize(imageStream);
 
-                        lock (this)
+                        Clipboard.SetImage(bmp);
+
+                        if (num_clients > 1)
                         {
-                            TcpClient[] tcpClients = new TcpClient[tableConnectionsClipboard.Count];
-                            tableConnectionsClipboard.Values.CopyTo(tcpClients, 0);
-                            foreach (TcpClient tcpClient in tcpClients)
+                            lock (this)
                             {
-                                try
+                                string why = "Broadcasting...";
+                                mainForm.Invoke(new DisableClipboardCallback(mainForm.disableClipboard), new object[] { why });
+
+                                TcpClient[] tcpClients = new TcpClient[tableConnectionsClipboard.Count];
+                                tableConnectionsClipboard.Values.CopyTo(tcpClients, 0);
+                                foreach (TcpClient tcpClient in tcpClients)
                                 {
-                                    if (tcpClient == null || tcpClient == tableConnectionsClipboard[username])
+                                    try
+                                    {
+                                        if (tcpClient == null || tcpClient == tableConnectionsClipboard[username])
+                                            continue;
+
+                                        NetworkStream nS = tcpClient.GetStream();
+
+                                        StreamWriter sW = new StreamWriter(tcpClient.GetStream());
+                                        sW.WriteLine("Imag" + username);
+                                        sW.Flush();
+
+                                        IFormatter myformat = new BinaryFormatter();
+                                        myformat.Serialize(nS, bmp);
+
+                                        N_ACK++;
+                                    }
+                                    catch
+                                    {
+                                        sendAdminMessage("Error sending clipboard from user '" + username + "' to other users.");
+
+                                        //removeUser(tcpClient);
                                         continue;
-
-                                    NetworkStream nS = tcpClient.GetStream();
-
-                                    StreamWriter sW = new StreamWriter(tcpClient.GetStream());
-                                    sW.WriteLine("Imag" + username);
-                                    sW.Flush();
-
-                                    IFormatter myformat = new BinaryFormatter();
-                                    myformat.Serialize(nS, bmp);
-                                }
-                                catch
-                                {
-                                    sendAdminMessage("Error receiving clipboard from user '" + username + "'. User will be removed");
-                                    removeUser(tcpClient);
-                                    continue;
+                                    }
                                 }
                             }
                         }
-                        Clipboard.SetImage(bmp);
 
                         sendAdminMessage(username + " shared his clipboard (Image)");
                     }
                     #endregion
-                    
-                    string enable = "Share Clipboard";
-                    mainForm.Invoke(new DisableClipboardCallback(mainForm.enableClipboard), new object[] { enable });
+
+
+                    if (num_clients == 1)
+                    {
+                        // se ho un soo cliente non devo aspettare che mi torni alcun ACK
+                        string enable = "Share Clipboard";
+                        mainForm.Invoke(new DisableClipboardCallback(mainForm.enableClipboard), new object[] { enable });
+                    }
 
                     // alla fine di ogni ricezione, il Server manda un ACK al Client
 
@@ -895,13 +963,13 @@ namespace Server
                     streamWriter.WriteLine("ACK.");
                     streamWriter.Flush();
                     streamWriter = null;
-                
+
                 }
                 catch
                 {
                     // di solito si arriva qui quando il Client relativo al thread si e' disconnesso...
                     // per sicurezza, rimuoviamo l'utente
-                    removeUser(tcpClibpoardClient);
+                    //removeUser(tcpClibpoardClient);
                     break;
                 }
             }
