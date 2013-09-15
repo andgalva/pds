@@ -546,6 +546,17 @@ namespace Client
                     try { type = msgLine.Substring(0, 4); }
                     catch { continue; }
 
+                    if (type.Equals("ACK."))
+                    {
+                        // il Server ha mandato ACK poiche' ha finito di ricevere la nostra clipboard
+                        // -> riabilito tasto Clipboard
+
+                        string reset = "Share Clipboard";
+                        this.Invoke(new DisableClipboardCallback(enableClipboard), new object[] { reset });
+
+                        continue;
+                    }
+
                     if (!type.Equals("File") && !type.Equals("Text") && !type.Equals("Imag"))
                         continue;
 
@@ -676,13 +687,23 @@ namespace Client
                     }
                     #endregion
 
-                    string reset = "Share Clipboard";
-                    this.Invoke(new DisableClipboardCallback(enableClipboard), new object[] { reset });
+                    // mando ACK al Server quando ho finito di ricevere
+                    
+                    StreamWriter sw = new StreamWriter(tcpClipboard.GetStream());
+                    sw.WriteLine("ACK.");
+                    sw.Flush();
+                    
+                    string enable = "Share Clipboard";
+                    this.Invoke(new DisableClipboardCallback(enableClipboard), new object[] { enable });
                 }
-                catch(Exception exc)
+                catch(Exception)
                 {
-                    //MessageBox.Show(exc.ToString());
-                    // si arriva qui quando (SE) il Server si e' disconnesso mentre spediva...
+                    if (connected)
+                    {
+                        // si arriva qui quando (SE) il Server si e' disconnesso mentre spediva...
+                        string reset = "Share Clipboard";
+                        this.Invoke(new DisableClipboardCallback(enableClipboard), new object[] { reset });
+                    }
                     
                     // chiudo???
                     streamReceiverClipboard.Close();
@@ -789,13 +810,23 @@ namespace Client
                 }
             }
             //sw.Close();
-            why = "Share Clipboard";
-            this.Invoke(new DisableClipboardCallback(this.enableClipboard), new object[] { why });
+
         }
         private void buttonClipboard_Click(object sender, EventArgs e)
         {
             string dataText;
-            IDataObject data = Clipboard.GetDataObject();
+            IDataObject data;
+            try
+            {
+                data = Clipboard.GetDataObject();
+            }
+            catch (ExternalException)
+            {
+                // da' questa eccezione in caso di concorrenza con altri programmi
+
+                buttonClipboard.Text = "Clipboard busy. Retry.";
+                return;
+            }
 
             StreamWriter sw = new StreamWriter(tcpClipboard.GetStream());
 
@@ -814,12 +845,10 @@ namespace Client
                     Byte[] sendBytes = Encoding.ASCII.GetBytes(dataText);
                     netstream.Write(sendBytes, 0, sendBytes.Length);
 
-                    buttonClipboard.Enabled = true;
-                    buttonClipboard.Text = "Share Clipboard";
                 }
                 catch (Exception )
                 {
-                    //MessageBox.Show("Error sending clipboard: " + ex.ToString());
+                    MessageBox.Show("Error sending clipboard");
                     buttonClipboard.Enabled = true;
                     buttonClipboard.Text = "Share Clipboard";
                     return;
@@ -850,17 +879,19 @@ namespace Client
    
                     NetworkStream networkStream = tcpClipboard.GetStream();
                     formatter.Serialize(networkStream, bmp);
+
                 }
                 catch (Exception)
                 {
-                    //MessageBox.Show("Error sending clipboard: " + ex.ToString());
+                    MessageBox.Show("Error sending clipboard");
 
                     buttonClipboard.Enabled = true;
                     buttonClipboard.Text = "Share Clipboard";
                     return;
                 }
-                buttonClipboard.Enabled = true;
-                buttonClipboard.Text = "Share Clipboard";
+
+                // il Client deve attendere un "ACK" da parte del Server per riattivare il tasto Clipboard
+                // -> guarda funzione receiveClipboard
             }
             else
             {

@@ -124,11 +124,18 @@ namespace Server
         }
         public void removeUser(TcpClient tcpUser)
         {
-            if (tableConnections[tcpUser] == null)
+            if (tcpUser == null || tableConnections[tcpUser] == null)
                 return;
 
             //if (tcpUser.Connected)
+            try
+            {
                 tcpUser.GetStream().Close();
+            }
+            catch (InvalidOperationException)
+            {
+                // passo da qui quando lo user è crashato, durante Debug
+            }
 
             lock (this)
             {
@@ -546,13 +553,14 @@ namespace Server
             }
 
 
-            why = "Share Clipboard";
-            mainForm.Invoke(new DisableClipboardCallback(mainForm.enableClipboard), new object[] { why });
         }
         public void sendClipboardText(string text)
         {
             //TcpClient[] tcpClients = new TcpClient[MainServer.tableConnectionsClipboard.Count];
             //MainServer.tableConnectionsClipboard.Values.CopyTo(tcpClients, 0);
+
+            string why = "Sharing Clipboard";
+            mainForm.Invoke(new DisableClipboardCallback(mainForm.disableClipboard), new object[] { why });
 
             lock (this)
             {
@@ -584,8 +592,6 @@ namespace Server
             }
             sendAdminMessage("Server shared clipboard (Text)");
 
-            string why = "Share Clipboard";
-            mainForm.Invoke(new DisableClipboardCallback(mainForm.enableClipboard), new object[] { why });
         }
         public void sendClipboardImage(Bitmap bmp)
         {
@@ -593,6 +599,9 @@ namespace Server
             //String[] users = new String[MainServer.tableUsers.Count];
             //MainServer.tableConnectionsClipboard.Values.CopyTo(tcpClients, 0);
             //MainServer.tableUsers.Keys.CopyTo(users, 0);
+
+            string why = "Sharing Clipboard";
+            mainForm.Invoke(new DisableClipboardCallback(mainForm.disableClipboard), new object[] { why });
 
             lock (this)
             {
@@ -624,8 +633,6 @@ namespace Server
             }
             sendAdminMessage("Server shared his clipboard (Image)");
 
-            string why = "Share Clipboard";
-            mainForm.Invoke(new DisableClipboardCallback(mainForm.enableClipboard), new object[] { why });
         }
         private void receiveClipboard(object tcpConnection)
         {
@@ -646,6 +653,16 @@ namespace Server
                 try
                 {
                     string msgLine = streamReader.ReadLine();
+
+                    if (msgLine.Substring(0, 4).Equals("ACK."))
+                    {
+                        // il Server deve attendere l'ACK dal Client per riabilitare il tasto Clipboard
+
+                        string Reason = "Share Clipboard";
+                        mainForm.Invoke(new DisableClipboardCallback(mainForm.enableClipboard), new object[] { Reason });
+
+                        continue;
+                    }
 
                     username = msgLine.Substring(4);
 
@@ -770,8 +787,6 @@ namespace Server
                             mainForm.Invoke(new UpdateClipboardCallback(updateClipboardWithFilePaths), new object[] { paths });
                         }
 
-                        why = "Share Clipboard";
-                        mainForm.Invoke(new DisableClipboardCallback(mainForm.enableClipboard), new object[] { why });
                     }
 
                     #endregion
@@ -823,8 +838,6 @@ namespace Server
                         dataClipboard.SetData(text);
                         Clipboard.SetDataObject(dataClipboard, true);
 
-                        Reason = "Share Clipboard";
-                        mainForm.Invoke(new DisableClipboardCallback(mainForm.enableClipboard), new object[] { Reason });
                         sendAdminMessage(username + " shared his clipboard (Text): '"+ text +"'");
                     }
                     #endregion
@@ -838,11 +851,6 @@ namespace Server
                         Stream imageStream = tcpClibpoardClient.GetStream();
                         IFormatter formatter = new BinaryFormatter();
                         Bitmap bmp = (Bitmap)formatter.Deserialize(imageStream);
-
-                        //TcpClient[] tcpClients = new TcpClient[MainServer.tableConnectionsClipboard.Count];
-                        //String[] users = new String[MainServer.tableUsers.Count];
-                        //MainServer.tableConnectionsClipboard.Values.CopyTo(tcpClients, 0);
-                        //MainServer.tableUsers.Keys.CopyTo(users, 0);
 
                         lock (this)
                         {
@@ -875,11 +883,19 @@ namespace Server
                         Clipboard.SetImage(bmp);
 
                         sendAdminMessage(username + " shared his clipboard (Image)");
-
-                        why = "Share Clipboard";
-                        mainForm.Invoke(new DisableClipboardCallback(mainForm.enableClipboard), new object[] { why });
                     }
                     #endregion
+                    
+                    string enable = "Share Clipboard";
+                    mainForm.Invoke(new DisableClipboardCallback(mainForm.enableClipboard), new object[] { enable });
+
+                    // alla fine di ogni ricezione, il Server manda un ACK al Client
+
+                    StreamWriter streamWriter = new StreamWriter(tcpClibpoardClient.GetStream());
+                    streamWriter.WriteLine("ACK.");
+                    streamWriter.Flush();
+                    streamWriter = null;
+                
                 }
                 catch
                 {
