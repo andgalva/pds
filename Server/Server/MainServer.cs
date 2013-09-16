@@ -660,7 +660,7 @@ namespace Server
                 try
                 {
                     string msgLine = streamReader.ReadLine();
-                    sendAdminMessage("--- RICEVUTO <" + msgLine +"> ---");
+                    //sendAdminMessage("--- RICEVUTO <" + msgLine +"> ---");
                     string msgType;
                     try
                     {
@@ -670,7 +670,7 @@ namespace Server
                     {
                         // puo' essere una stringa letta male (qualcosa rimasto sul buffer dopo che un client si e' disconnesso)
 
-                        sendAdminMessage("errore leggendo la msgline: <" + msgLine + "> ."); 
+                        //sendAdminMessage("errore leggendo la msgline: <" + msgLine + "> ."); 
                         continue;
                     }
 
@@ -687,7 +687,7 @@ namespace Server
                             string Reason = "Share Clipboard";
                             mainForm.Invoke(new DisableClipboardCallback(mainForm.enableClipboard), new object[] { Reason });
                         }
-                        sendAdminMessage("N_ACK = " + N_ACK +"/"+ num_clients);
+                        //sendAdminMessage("N_ACK = " + N_ACK +"/"+ num_clients);
                         continue;
                     }
 
@@ -700,7 +700,7 @@ namespace Server
                     {
                         // puo' essere una stringa letta male (qualcosa rimasto sul buffer dopo che un client si e' disconnesso)
 
-                        sendAdminMessage("errore leggendo la msgline: <" + msgLine + "> .");
+                        //sendAdminMessage("errore leggendo la msgline: <" + msgLine + "> .");
                         continue;
                     }
 
